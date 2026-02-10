@@ -36,6 +36,37 @@ from pathlib import Path
 from typing import Iterable, Optional
 
 
+def _resolve_working_dir(*, default_dir: Path, dotenv_base_dir: Path) -> Path:
+    """
+    Resolve Codex working directory.
+
+    - If WORKING_DIR is unset/empty: use default_dir (historical behavior).
+    - If WORKING_DIR is relative: resolve it relative to dotenv_base_dir (where `.env` lives).
+    - Expands `~` and environment variables.
+    """
+    raw = os.getenv("WORKING_DIR", "").strip()
+    if not raw:
+        return default_dir
+
+    try:
+        p = Path(os.path.expandvars(raw)).expanduser()
+        if not p.is_absolute():
+            p = (dotenv_base_dir / p).resolve()
+        else:
+            p = p.resolve()
+        if p.is_dir():
+            return p
+    except Exception:
+        p = None  # type: ignore[assignment]
+
+    msg = f"[WARN] Invalid WORKING_DIR={raw!r}; falling back to {str(default_dir)!r}\n"
+    try:
+        sys.stderr.write(msg)
+    except Exception:
+        pass
+    return default_dir
+
+
 def _ensure_pywayne_on_sys_path() -> None:
     """
     This repo doesn't vendor the `pywayne` package. On this machine it commonly lives at:
@@ -156,9 +187,21 @@ def main() -> None:
             f"Import error: {e}"
         )
 
-    dotenv_path = Path(__file__).resolve().parent / ".env"
+    script_dir = Path(__file__).resolve().parent
+    # `.env` is loaded from the current working directory (where you run the script),
+    # not from the script directory.
+    run_dir = Path.cwd().resolve()
+    dotenv_path = run_dir / ".env"
+    if not dotenv_path.exists():
+        # Backward-compatible fallback (non-fatal): allow running from elsewhere.
+        fallback = script_dir / ".env"
+        if fallback.exists():
+            dotenv_path = fallback
     load_dotenv(dotenv_path, override=False)
     _export_canonical_env()
+
+    # WORKING_DIR only affects the Codex thread's working directory.
+    working_dir = _resolve_working_dir(default_dir=run_dir, dotenv_base_dir=dotenv_path.parent)
 
     app_id = _require_env_any(["LARK_APP_ID", "LARK_APPID"])
     app_secret = _require_env_any(["LARK_APP_SECRET", "LARK_APPSECRET"])
@@ -185,9 +228,9 @@ def main() -> None:
     codex_mention_key = os.getenv("LARK_CODEX_MENTION_KEY", "@_user_1").strip() or "@_user_1"
     codex_timeout_sec = int(os.getenv("LARK_CODEX_TIMEOUT_SEC", "600").strip() or "600")
     codex_model_default = os.getenv("LARK_CODEX_MODEL_DEFAULT", "").strip() or None
-    codex_script = (Path(__file__).resolve().parent / "codex_qa.mjs")
+    codex_script = (script_dir / "codex_qa.mjs")
     codex_state = {"workers": {}}  # chat_id -> {"queue": asyncio.Queue, "task": asyncio.Task}
-    codex_map_path = Path(__file__).resolve().parent / ".codex_threads.json"
+    codex_map_path = working_dir / ".codex_threads.json"
 
     async def _ask_codex(question: str, conv_key: str) -> dict:
         question = (question or "").strip()
@@ -205,7 +248,7 @@ def main() -> None:
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
-            cwd=str(Path(__file__).resolve().parent),
+            cwd=str(working_dir),
             env={**os.environ, **({"CODEX_MODEL_DEFAULT": codex_model_default} if codex_model_default else {})},
         )
         try:

@@ -20,6 +20,7 @@ Listen to Feishu/Lark group messages, and when mentioned, route the question to 
 
 1. Create `.env`:
    - Start from `.env.example`
+   - Optional: set `WORKING_DIR` to run Codex against a different project directory (and store `.codex_threads.json`/`codex_artifacts/` there)
 2. Python deps:
    - This script depends on `pywayne` (not vendored in this repo) and its dependencies.
 3. Node deps:
@@ -40,4 +41,3 @@ python lark_codex_listener.py
 ## Notes
 
 - Do not commit `.env` to a public repository.
-
