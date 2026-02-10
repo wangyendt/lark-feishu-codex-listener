@@ -1,0 +1,10 @@
+.env
+__pycache__/
+*.pyc
+node_modules/
+.codex/
+.codex_threads.json
+codex_artifacts/
+.DS_Store
+.venv/
+

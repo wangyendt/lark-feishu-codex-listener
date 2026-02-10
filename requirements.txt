@@ -1,0 +1,14 @@
+# Runtime deps for pywayne.lark_bot_listener + pywayne.tools.
+# Install into a venv in this repo:
+#   python3 -m venv .venv
+#   . .venv/bin/activate
+#   pip install -U pip
+#   pip install -r scripts/requirements-lark-listener.txt
+
+lark-oapi
+opencv-python
+matplotlib
+PyYAML
+filelock
+Pillow
+python-dotenv
