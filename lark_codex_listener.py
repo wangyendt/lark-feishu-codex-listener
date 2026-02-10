@@ -14,7 +14,9 @@ Env vars:
 - LARK_REPLY_AS_POST (optional, 0/1, default: 0)  # echo as post instead of text
 - LARK_DEBUG (optional, 0/1, default: 0)
 - LARK_CODEX_GROUP_NAME (optional, default: 测试4)  # only in this group, @bot triggers Codex answer
-- LARK_CODEX_MENTION_KEY (optional, default: @_user_1)  # mention placeholder in text content
+- LARK_CODEX_TRIGGER_MENTION_NAME (optional)  # only trigger Codex when @mention this name (recommended)
+- LARK_CODEX_TRIGGER_MENTION_OPEN_ID (optional)  # only trigger Codex when @mention this open_id (more stable)
+- LARK_CODEX_MENTION_KEY (optional, default: @_user_1)  # fallback mention placeholder check (when mentions are missing)
 - LARK_CODEX_TIMEOUT_SEC (optional, default: 600)
 - LARK_CODEX_MODEL_DEFAULT (optional)  # if set, used as default model for Codex SDK
 - OSS_ENDPOINT (optional)
@@ -32,6 +34,7 @@ import asyncio
 import os
 import sys
 import json
+import time
 from pathlib import Path
 from typing import Iterable, Optional
 
@@ -171,6 +174,29 @@ def _export_canonical_env() -> None:
         os.environ["OSS_ACCESS_KEY_SECRET"] = key_secret
 
 
+def _norm_mention_name(name: str) -> str:
+    n = (name or "").strip()
+    if n.startswith("@"):
+        n = n[1:].strip()
+    return n.lower()
+
+
+def _remove_mention_keys(text: str, mentions) -> str:
+    """
+    Lark text messages commonly use placeholders like `@_user_1` and provide a `mentions` array
+    describing who was mentioned. Remove all mention placeholders so the question is clean.
+    """
+    out = text or ""
+    for m in mentions or []:
+        try:
+            k = (getattr(m, "key", None) or "").strip()
+            if k:
+                out = out.replace(k, "")
+        except Exception:
+            continue
+    return out
+
+
 def main() -> None:
     _ensure_pywayne_on_sys_path()
 
@@ -178,6 +204,7 @@ def main() -> None:
         from pywayne.lark_bot_listener import LarkBotListener
         from pywayne.lark_bot import PostContent
         from pywayne.tools import wayne_print
+        from lark_oapi.api.im.v1 import P2ImMessageReceiveV1
     except Exception as e:
         raise SystemExit(
             "Failed to import pywayne modules.\n"
@@ -225,6 +252,8 @@ def main() -> None:
 
     # If unset/empty: enable Codex answering in any listened group (still requires mention key).
     codex_group_name = os.getenv("LARK_CODEX_GROUP_NAME", "").strip() or None
+    codex_trigger_mention_name = os.getenv("LARK_CODEX_TRIGGER_MENTION_NAME", "").strip() or None
+    codex_trigger_mention_open_id = os.getenv("LARK_CODEX_TRIGGER_MENTION_OPEN_ID", "").strip() or None
     codex_mention_key = os.getenv("LARK_CODEX_MENTION_KEY", "@_user_1").strip() or "@_user_1"
     codex_timeout_sec = int(os.getenv("LARK_CODEX_TIMEOUT_SEC", "600").strip() or "600")
     codex_model_default = os.getenv("LARK_CODEX_MODEL_DEFAULT", "").strip() or None
@@ -411,12 +440,59 @@ def main() -> None:
 
         codex_state["workers"][chat_id] = {"queue": q, "task": asyncio.create_task(worker())}
 
-    @listener.listen(message_type="text")
-    async def handle_text(ctx):
-        chat_id = ctx.chat_id
-        is_group = ctx.is_group
-        user_open_id = ctx.user_id
-        text = (ctx.content or "").strip()
+    # Register a raw handler (instead of `@listener.listen`) so we can access `message.mentions`.
+    # Lark will put placeholders like `@_user_1` in `text`, and details in `mentions`.
+    processed_message_ids = set()
+    message_timestamps = {}
+
+    def _clean_expired_message_ids(expiry_sec: int) -> None:
+        now = time.time()
+        expired = [mid for mid, ts in message_timestamps.items() if now - ts > expiry_sec]
+        for mid in expired:
+            processed_message_ids.discard(mid)
+            try:
+                del message_timestamps[mid]
+            except Exception:
+                pass
+
+    async def handle_text_raw(data: "P2ImMessageReceiveV1") -> None:
+        try:
+            msg = data.event.message
+            sender = data.event.sender
+        except Exception:
+            return
+        if not msg:
+            return
+
+        message_id = getattr(msg, "message_id", None) or ""
+        if message_id:
+            if message_id in processed_message_ids:
+                return
+            processed_message_ids.add(message_id)
+            message_timestamps[message_id] = time.time()
+            _clean_expired_message_ids(getattr(listener, "message_expiry_time", 60) or 60)
+
+        msg_type = getattr(msg, "message_type", None) or ""
+        if msg_type != "text":
+            return
+
+        chat_id = getattr(msg, "chat_id", None) or ""
+        chat_type = getattr(msg, "chat_type", None) or ""
+        is_group = (chat_type == "group")
+        user_open_id = ""
+        try:
+            user_open_id = sender.sender_id.open_id
+        except Exception:
+            user_open_id = ""
+
+        raw_content = getattr(msg, "content", None) or ""
+        text = ""
+        try:
+            text = (json.loads(raw_content).get("text") or "").strip()
+        except Exception:
+            text = ""
+
+        mentions = getattr(msg, "mentions", None) or []
 
         group_name = ""
         user_name = ""
@@ -426,6 +502,19 @@ def main() -> None:
             pass
 
         if debug:
+            try:
+                mention_debug = []
+                for m in mentions or []:
+                    mention_debug.append(
+                        {
+                            "key": getattr(m, "key", None),
+                            "name": getattr(m, "name", None),
+                            "open_id": getattr(getattr(m, "id", None), "open_id", None),
+                            "user_id": getattr(getattr(m, "id", None), "user_id", None),
+                        }
+                    )
+            except Exception:
+                mention_debug = []
             wayne_print(
                 {
                     "recv": True,
@@ -435,6 +524,7 @@ def main() -> None:
                     "group_name": group_name,
                     "user_name": user_name,
                     "user_open_id": user_open_id,
+                    "mentions": mention_debug,
                 },
                 color="magenta",
                 verbose=1,
@@ -452,15 +542,38 @@ def main() -> None:
         if text.startswith(echo_prefix):
             return
 
-        # Only react when the bot is mentioned.
-        if codex_mention_key not in text:
+        # Only react when the target bot is mentioned.
+        mentioned_bot = False
+        if codex_trigger_mention_open_id or codex_trigger_mention_name:
+            want_name = _norm_mention_name(codex_trigger_mention_name or "")
+            for m in mentions or []:
+                try:
+                    if codex_trigger_mention_open_id:
+                        mid = getattr(m, "id", None)
+                        if mid and (getattr(mid, "open_id", None) == codex_trigger_mention_open_id):
+                            mentioned_bot = True
+                            break
+                    if want_name:
+                        if _norm_mention_name(getattr(m, "name", "") or "") == want_name:
+                            mentioned_bot = True
+                            break
+                except Exception:
+                    continue
+        else:
+            # Backward-compatible fallback: match placeholder in text.
+            mentioned_bot = (codex_mention_key in text)
+
+        if not mentioned_bot:
             return
 
         codex_enabled_here = (codex_group_name is None) or (group_name == codex_group_name)
 
         # If user @mentions the bot, answer via Codex SDK (optionally restricted by group name).
         if codex_enabled_here:
-            question = text.replace(codex_mention_key, "").strip()
+            question = _remove_mention_keys(text, mentions)
+            if codex_mention_key:
+                question = question.replace(codex_mention_key, "")
+            question = question.strip()
             if not question:
                 return
 
@@ -504,12 +617,21 @@ def main() -> None:
 
         if reply_as_post:
             post = PostContent(title="复述")
-            echo_text = text.replace(codex_mention_key, "").strip()
+            echo_text = _remove_mention_keys(text, mentions)
+            if codex_mention_key:
+                echo_text = echo_text.replace(codex_mention_key, "")
+            echo_text = echo_text.strip()
             post.add_content_in_new_line(post.make_text_content(f"{echo_prefix}{echo_text}"))
             listener.bot.send_post_to_chat(chat_id, post.get_content())
         else:
-            echo_text = text.replace(codex_mention_key, "").strip()
+            echo_text = _remove_mention_keys(text, mentions)
+            if codex_mention_key:
+                echo_text = echo_text.replace(codex_mention_key, "")
+            echo_text = echo_text.strip()
             listener.bot.send_text_to_chat(chat_id=chat_id, text=f"{echo_prefix}{echo_text}")
+
+    # Register the handler.
+    listener.handlers.append(handle_text_raw)
 
     wayne_print(
         {
@@ -519,6 +641,8 @@ def main() -> None:
             "debug": debug,
             "reply_as_post": reply_as_post,
             "codex_group_name": codex_group_name or "(any listened group)",
+            "codex_trigger_mention_name": codex_trigger_mention_name or "",
+            "codex_trigger_mention_open_id": codex_trigger_mention_open_id or "",
             "codex_mention_key": codex_mention_key,
             "codex_timeout_sec": codex_timeout_sec,
             "codex_model_default": codex_model_default,
