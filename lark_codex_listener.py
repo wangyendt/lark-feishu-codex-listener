@@ -197,6 +197,16 @@ def _remove_mention_keys(text: str, mentions) -> str:
     return out
 
 
+def _truncate_middle(text: str, max_len: int) -> str:
+    s = text or ""
+    if len(s) <= max_len:
+        return s
+    if max_len <= 20:
+        return s[-max_len:]
+    keep = (max_len - 7) // 2
+    return s[:keep] + "\n...\n" + s[-(max_len - 7 - keep):]
+
+
 def main() -> None:
     _ensure_pywayne_on_sys_path()
 
@@ -294,19 +304,38 @@ def main() -> None:
 
         out = (out_b or b"").decode("utf-8", errors="ignore").strip()
         err = (err_b or b"").decode("utf-8", errors="ignore").strip()
-        if err:
-            if len(err) > 1200:
-                err = err[-1200:]
-            return {"answer": f"Codex error: {err}", "artifacts": []}
+
+        parsed = None
         if out:
             try:
                 obj = json.loads(out)
                 if isinstance(obj, dict) and "answer" in obj:
                     if "artifacts" not in obj or not isinstance(obj["artifacts"], list):
                         obj["artifacts"] = []
-                    return obj
+                    parsed = obj
             except Exception:
-                return {"answer": out, "artifacts": []}
+                parsed = {"answer": out, "artifacts": []}
+
+        rc = proc.returncode if proc.returncode is not None else -1
+        if rc == 0:
+            if parsed is not None:
+                return parsed
+            if err:
+                err = _truncate_middle(err, 1200)
+                return {"answer": f"Codex warning: {err}", "artifacts": []}
+            return {"answer": "Codex returned empty output.", "artifacts": []}
+
+        if parsed is not None:
+            warn = ""
+            if err:
+                err = _truncate_middle(err, 600)
+                warn = f"\n\n[Codex warning]\n{err}"
+            parsed["answer"] = f"{parsed.get('answer', '')}{warn}".strip()
+            return parsed
+
+        if err:
+            err = _truncate_middle(err, 1200)
+            return {"answer": f"Codex error (exit={rc}): {err}", "artifacts": []}
         return {"answer": "Codex returned empty output.", "artifacts": []}
 
     def _read_codex_map() -> dict:

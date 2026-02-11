@@ -8,3 +8,6 @@ codex_artifacts/
 .DS_Store
 .venv/
 
+.agents/
+.cursor/
+.claude/

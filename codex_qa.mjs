@@ -9,6 +9,7 @@
 
 import { Codex } from "@openai/codex-sdk";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 
 async function readStdin() {
@@ -122,6 +123,38 @@ function isImageFile(p) {
   return [".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"].includes(ext);
 }
 
+function getModelsCachePath() {
+  const codexHome = String(process.env.CODEX_HOME || "").trim() || path.join(os.homedir(), ".codex");
+  return path.join(codexHome, "models_cache.json");
+}
+
+function maybeRepairModelsCache() {
+  const cachePath = getModelsCachePath();
+  try {
+    if (!fs.existsSync(cachePath)) return false;
+    const raw = fs.readFileSync(cachePath, "utf8");
+    if (!raw.trim()) {
+      fs.unlinkSync(cachePath);
+      return true;
+    }
+    JSON.parse(raw);
+    return false;
+  } catch {
+    try {
+      fs.unlinkSync(cachePath);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+}
+
+function shouldRetryRun(message, hasThreadId) {
+  const msg = String(message || "");
+  if (hasThreadId) return true;
+  return /failed to renew cache ttl|failed to load models cache|EOF while parsing/i.test(msg);
+}
+
 const artifactsRoot = path.resolve(process.cwd(), "codex_artifacts");
 const artifactsDir = path.join(artifactsRoot, safeKey(args.key));
 try {
@@ -130,6 +163,9 @@ try {
   // non-fatal
 }
 const beforeArtifacts = new Set(listFilesRecursive(artifactsDir));
+
+// Preflight: if cache JSON is corrupted, remove it so Codex can rebuild.
+const repairedCacheAtStart = maybeRepairModelsCache();
 
 const codex = new Codex({ env: { ...process.env } });
 const entry = readEntry(map, args.key);
@@ -181,11 +217,18 @@ try {
   try {
     result = await thread.run(buildPrompt(prompt));
   } catch (e) {
-    // If resume failed (e.g. thread missing), start a new one and retry once.
+    // If resume fails, or cache is broken, start a new thread and retry once.
     const msg = e?.message ? String(e.message) : String(e);
-    if (threadId && /thread not found|rollout|session/i.test(msg)) {
+    if (shouldRetryRun(msg, Boolean(threadId))) {
+      const repaired = repairedCacheAtStart || maybeRepairModelsCache();
       thread = codex.startThread(threadOpts);
-      result = await thread.run(buildPrompt(prompt));
+      try {
+        result = await thread.run(buildPrompt(prompt));
+      } catch (e2) {
+        const msg2 = e2?.message ? String(e2.message) : String(e2);
+        const repairNote = repaired ? " (models cache repaired)" : "";
+        throw new Error(msg2 + repairNote);
+      }
     } else {
       throw e;
     }
