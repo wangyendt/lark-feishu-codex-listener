@@ -6,8 +6,8 @@ Listen to Feishu/Lark group messages, and when mentioned, route the question to 
 
 - Listens to messages in a target group (by group name or pinned `chat_id`)
 - Only reacts when the target bot is mentioned (recommended: match by `mentions[].name`, e.g. `algo_bot_conan`)
-- Adds a reaction to the original mention immediately instead of sending a text ACK, then removes that reaction after the reply is finished
-- Replies with Codex answer and `@` the asker
+- Adds a `Get` reaction to the original mention immediately, then removes that reaction after the reply is finished
+- Replies immediately with an orange placeholder card, then updates the same card to the final green result
 - If Codex creates new files/images under `codex_artifacts/<chat_id>/`, the bot uploads and sends them to the group
 - Supports per-group multi-turn conversation by resuming a Codex thread (stored in `.codex_threads.json`)
 - Supports switching Codex model by chat command

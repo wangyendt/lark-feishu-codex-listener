@@ -402,6 +402,21 @@ def main() -> None:
         except Exception:
             pass
 
+    def _create_pending_card(source_message_id: str) -> str:
+        if not source_message_id:
+            return ""
+        try:
+            resp = listener.bot.reply_streaming_card(
+                source_message_id,
+                title="Codex",
+                template="orange",
+                initial_md="",
+                status_text="Processing...",
+            )
+            return str(resp.get("message_id") or "").strip()
+        except Exception:
+            return ""
+
     def _write_codex_map(obj: dict) -> None:
         try:
             codex_map_path.write_text(json.dumps(obj, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
@@ -494,13 +509,33 @@ def main() -> None:
 
         q: asyncio.Queue = asyncio.Queue()
 
-        def _send_codex_answer(chat_id: str, user_open_id: str, md_text: str) -> None:
+        def _finish_card(card_message_id: str, md_text: str, *, failed: bool = False) -> None:
+            if not card_message_id:
+                return
+            text = (md_text or "").strip() or "Codex returned empty output."
+            template = "red" if failed else "green"
+            status_text = "Failed" if failed else "Done"
+            try:
+                listener.bot.update_streaming_card(
+                    card_message_id,
+                    text,
+                    title="Codex",
+                    template=template,
+                    done=True,
+                    status_text=status_text,
+                )
+            except Exception:
+                pass
+
+        def _send_codex_answer(chat_id: str, user_open_id: str, md_text: str, card_message_id: str) -> None:
             md_text = (md_text or "").strip()
+            if card_message_id:
+                _finish_card(card_message_id, md_text)
+                return
             if not md_text:
                 return
 
             post = PostContent(title="")
-            # First line: @ the asker
             if user_open_id:
                 post.add_contents_in_new_line([post.make_at_content(user_open_id), post.make_text_content(" ")])
             post.add_markdown(md_text, table_as="code_block", max_chunk_bytes=8_000)
@@ -510,13 +545,19 @@ def main() -> None:
             while True:
                 item = await q.get()
                 try:
-                    question, user_open_id, user_name, source_message_id, ack_reaction_id = item
+                    question, user_open_id, user_name, source_message_id, ack_reaction_id, card_message_id = item
                     resp = await _ask_codex(question, conv_key=chat_id)
                     answer = (resp.get("answer") or "").strip()
                     artifacts = resp.get("artifacts") or []
+                    failed = answer.lower().startswith("codex error") or answer.lower().startswith("codex timed out")
 
                     if answer:
-                        _send_codex_answer(chat_id, user_open_id, answer)
+                        if card_message_id:
+                            _finish_card(card_message_id, answer, failed=failed)
+                        else:
+                            _send_codex_answer(chat_id, user_open_id, answer, "")
+                    elif card_message_id:
+                        _finish_card(card_message_id, "Codex returned empty output.", failed=failed)
                     if artifacts:
                         wayne_print({"artifacts": artifacts}, color="yellow", verbose=1)
                         _send_artifacts_to_chat(chat_id, artifacts)
@@ -686,6 +727,7 @@ def main() -> None:
             qsize = q.qsize()
 
             ack_reaction_id = _add_ack_reaction(message_id)
+            card_message_id = _create_pending_card(message_id)
 
             user_name = ""
             if debug:
@@ -699,7 +741,7 @@ def main() -> None:
                 color="blue",
                 verbose=1,
             )
-            await q.put((question, user_open_id, user_name, message_id, ack_reaction_id))
+            await q.put((question, user_open_id, user_name, message_id, ack_reaction_id, card_message_id))
             return
 
         user_name = ""
