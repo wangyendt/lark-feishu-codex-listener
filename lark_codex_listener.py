@@ -259,6 +259,15 @@ def main() -> None:
     target_chat_id = _env_any(["LARK_CHAT_ID", "LARK_GROUP_CHAT_ID"])
 
     listener = LarkBotListener(app_id=app_id, app_secret=app_secret)
+    chat_name_cache = {}
+    try:
+        for item in listener.bot.get_group_list() or []:
+            cid = str(item.get("chat_id") or "").strip()
+            name = str(item.get("name") or "").strip()
+            if cid and name:
+                chat_name_cache[cid] = name
+    except Exception:
+        chat_name_cache = {}
 
     # If unset/empty: enable Codex answering in any listened group (still requires mention key).
     codex_group_name = os.getenv("LARK_CODEX_GROUP_NAME", "").strip() or None
@@ -267,6 +276,11 @@ def main() -> None:
     codex_mention_key = os.getenv("LARK_CODEX_MENTION_KEY", "@_user_1").strip() or "@_user_1"
     codex_timeout_sec = int(os.getenv("LARK_CODEX_TIMEOUT_SEC", "600").strip() or "600")
     codex_model_default = os.getenv("LARK_CODEX_MODEL_DEFAULT", "").strip() or None
+    codex_ack_reaction_codes = tuple(
+        code.strip()
+        for code in (os.getenv("LARK_CODEX_ACK_REACTION", "Get,GET,OK").split(","))
+        if code.strip()
+    )
     codex_script = (script_dir / "codex_qa.mjs")
     codex_state = {"workers": {}}  # chat_id -> {"queue": asyncio.Queue, "task": asyncio.Task}
     codex_map_path = working_dir / ".codex_threads.json"
@@ -345,6 +359,48 @@ def main() -> None:
         except Exception:
             pass
         return {}
+
+    def _get_chat_name(chat_id: str) -> str:
+        if not chat_id:
+            return ""
+        cached = chat_name_cache.get(chat_id, "")
+        if cached:
+            return cached
+        try:
+            req = listener.bot.client.im.v1.chat.get
+            from lark_oapi.api.im.v1 import GetChatRequest
+
+            response = req(GetChatRequest.builder().chat_id(chat_id).build())
+            if response.success():
+                name = getattr(getattr(response, "data", None), "name", "") or ""
+                name = str(name).strip()
+                if name:
+                    chat_name_cache[chat_id] = name
+                    return name
+        except Exception:
+            pass
+        return ""
+
+    def _add_ack_reaction(message_id: str) -> str:
+        if not message_id:
+            return ""
+        for emoji_type in codex_ack_reaction_codes:
+            try:
+                resp = listener.bot.add_reaction(message_id, emoji_type)
+            except Exception:
+                resp = {}
+            reaction_id = str(resp.get("reaction_id") or "").strip()
+            if reaction_id:
+                return reaction_id
+        return ""
+
+    def _remove_ack_reaction(message_id: str, reaction_id: str) -> None:
+        if not message_id or not reaction_id:
+            return
+        try:
+            listener.bot.delete_reaction(message_id, reaction_id)
+        except Exception:
+            pass
 
     def _write_codex_map(obj: dict) -> None:
         try:
@@ -454,7 +510,7 @@ def main() -> None:
             while True:
                 item = await q.get()
                 try:
-                    question, user_open_id, user_name = item
+                    question, user_open_id, user_name, source_message_id, ack_reaction_id = item
                     resp = await _ask_codex(question, conv_key=chat_id)
                     answer = (resp.get("answer") or "").strip()
                     artifacts = resp.get("artifacts") or []
@@ -465,6 +521,10 @@ def main() -> None:
                         wayne_print({"artifacts": artifacts}, color="yellow", verbose=1)
                         _send_artifacts_to_chat(chat_id, artifacts)
                 finally:
+                    try:
+                        _remove_ack_reaction(source_message_id, ack_reaction_id)
+                    except Exception:
+                        pass
                     q.task_done()
 
         codex_state["workers"][chat_id] = {"queue": q, "task": asyncio.create_task(worker())}
@@ -523,12 +583,8 @@ def main() -> None:
 
         mentions = getattr(msg, "mentions", None) or []
 
-        group_name = ""
+        group_name = chat_name_cache.get(chat_id, "")
         user_name = ""
-        try:
-            group_name, user_name = listener.bot.get_chat_and_user_name(chat_id, user_open_id)
-        except Exception:
-            pass
 
         if debug:
             try:
@@ -564,6 +620,8 @@ def main() -> None:
         if target_chat_id and chat_id != target_chat_id:
             return
         if not target_chat_id:
+            if not group_name:
+                group_name = _get_chat_name(chat_id)
             if group_name not in valid_group_names:
                 return
         if not text:
@@ -595,6 +653,9 @@ def main() -> None:
         if not mentioned_bot:
             return
 
+        if not group_name and codex_group_name is not None:
+            group_name = _get_chat_name(chat_id)
+
         codex_enabled_here = (codex_group_name is None) or (group_name == codex_group_name)
 
         # If user @mentions the bot, answer via Codex SDK (optionally restricted by group name).
@@ -624,19 +685,29 @@ def main() -> None:
             q = codex_state["workers"][chat_id]["queue"]
             qsize = q.qsize()
 
-            # Quick ACK so users don't think the bot missed the message.
-            try:
-                listener.bot.send_text_to_chat(chat_id, text="收到，处理中...")
-            except Exception:
-                pass
+            ack_reaction_id = _add_ack_reaction(message_id)
+
+            user_name = ""
+            if debug:
+                try:
+                    _, user_name = listener.bot.get_chat_and_user_name(chat_id, user_open_id)
+                except Exception:
+                    user_name = ""
 
             wayne_print(
                 f"[Codex] enqueued question from {group_name} - {user_name} (q={qsize}): {question}",
                 color="blue",
                 verbose=1,
             )
-            await q.put((question, user_open_id, user_name))
+            await q.put((question, user_open_id, user_name, message_id, ack_reaction_id))
             return
+
+        user_name = ""
+        if debug:
+            try:
+                _, user_name = listener.bot.get_chat_and_user_name(chat_id, user_open_id)
+            except Exception:
+                user_name = ""
 
         wayne_print(
             f"收到消息: {text} from {group_name} - {user_name} (chat_id={chat_id})",
@@ -675,6 +746,7 @@ def main() -> None:
             "codex_mention_key": codex_mention_key,
             "codex_timeout_sec": codex_timeout_sec,
             "codex_model_default": codex_model_default,
+            "codex_ack_reaction_codes": list(codex_ack_reaction_codes),
             "codex_script": str(codex_script),
         },
         color="green",
