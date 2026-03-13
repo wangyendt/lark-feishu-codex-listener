@@ -19,6 +19,7 @@ Env vars:
 - LARK_CODEX_MENTION_KEY (optional, default: @_user_1)  # fallback mention placeholder check (when mentions are missing)
 - LARK_CODEX_TIMEOUT_SEC (optional, default: 600)
 - LARK_CODEX_MODEL_DEFAULT (optional)  # if set, used as default model for Codex SDK
+- LARK_CODEX_RESET_THREADS_ON_START (optional, default: 0)  # if 1, clear saved threadIds on startup but keep models
 - OSS_ENDPOINT (optional)
 - OSS_BUCKET_NAME / OSS_BUCKETNAME (optional)
 - OSS_ACCESS_KEY_ID / OSS_ACCESSKEYID (optional)
@@ -276,6 +277,9 @@ def main() -> None:
     codex_mention_key = os.getenv("LARK_CODEX_MENTION_KEY", "@_user_1").strip() or "@_user_1"
     codex_timeout_sec = int(os.getenv("LARK_CODEX_TIMEOUT_SEC", "600").strip() or "600")
     codex_model_default = os.getenv("LARK_CODEX_MODEL_DEFAULT", "").strip() or None
+    codex_reset_threads_on_start = (
+        os.getenv("LARK_CODEX_RESET_THREADS_ON_START", "0").strip().lower() in {"1", "true", "yes", "y"}
+    )
     codex_ack_reaction_codes = tuple(
         code.strip()
         for code in (os.getenv("LARK_CODEX_ACK_REACTION", "Get,GET,OK").split(","))
@@ -423,6 +427,39 @@ def main() -> None:
         except Exception:
             pass
 
+    def _reset_chat_thread(chat_id: str) -> None:
+        obj = _read_codex_map()
+        v = obj.get(chat_id)
+        if isinstance(v, dict):
+            entry = dict(v)
+            entry.pop("threadId", None)
+            entry.pop("thread_id", None)
+            obj[chat_id] = entry
+            _write_codex_map(obj)
+            return
+        if isinstance(v, str):
+            obj[chat_id] = {}
+            _write_codex_map(obj)
+
+    def _reset_all_threads() -> int:
+        obj = _read_codex_map()
+        changed = 0
+        for key, value in list(obj.items()):
+            if isinstance(value, dict):
+                entry = dict(value)
+                had_thread = ("threadId" in entry) or ("thread_id" in entry)
+                entry.pop("threadId", None)
+                entry.pop("thread_id", None)
+                obj[key] = entry
+                if had_thread:
+                    changed += 1
+            elif isinstance(value, str) and value.strip():
+                obj[key] = {}
+                changed += 1
+        if changed:
+            _write_codex_map(obj)
+        return changed
+
     def _get_chat_model(chat_id: str) -> Optional[str]:
         obj = _read_codex_map()
         v = obj.get(chat_id)
@@ -459,6 +496,8 @@ def main() -> None:
         # Query current model
         if q in {"模型", "当前模型", "model", "/model"}:
             return {"action": "show"}
+        if q in {"/new", "new", "重开对话", "新开对话", "重置对话"}:
+            return {"action": "new"}
 
         # Set model
         reset = False
@@ -484,6 +523,14 @@ def main() -> None:
                 return {"action": "set", "model": name, "reset": reset}
 
         return None
+
+    if codex_reset_threads_on_start:
+        reset_count = _reset_all_threads()
+        wayne_print(
+            {"reset_threads_on_start": True, "reset_thread_count": reset_count},
+            color="yellow",
+            bold=True,
+        )
 
     def _send_artifacts_to_chat(chat_id: str, artifacts: list):
         for art in artifacts or []:
@@ -714,6 +761,10 @@ def main() -> None:
                     current = _get_chat_model(chat_id) or codex_model_default or "(Codex 默认配置)"
                     listener.bot.send_text_to_chat(chat_id=chat_id, text=f"当前模型：{current}")
                     return
+                if cmd["action"] == "new":
+                    _reset_chat_thread(chat_id)
+                    listener.bot.send_text_to_chat(chat_id=chat_id, text="已重置当前对话；下次提问将新开 thread。")
+                    return
                 if cmd["action"] == "set":
                     model = cmd["model"]
                     reset = bool(cmd.get("reset"))
@@ -788,6 +839,7 @@ def main() -> None:
             "codex_mention_key": codex_mention_key,
             "codex_timeout_sec": codex_timeout_sec,
             "codex_model_default": codex_model_default,
+            "codex_reset_threads_on_start": codex_reset_threads_on_start,
             "codex_ack_reaction_codes": list(codex_ack_reaction_codes),
             "codex_script": str(codex_script),
         },

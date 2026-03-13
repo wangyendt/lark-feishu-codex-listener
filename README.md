@@ -36,6 +36,7 @@ python lark_codex_listener.py
 ## Model Commands (in Feishu, must mention the bot)
 
 - Show current model: `@algo_bot_conan /model`
+- Start a fresh thread for this chat: `@algo_bot_conan /new`
 - Set model: `@algo_bot_conan /model gpt-5-codex-mini`
 - Set model and reset thread: `@algo_bot_conan /model-reset gpt-5-codex-mini`
 
@@ -44,3 +45,4 @@ python lark_codex_listener.py
 - Do not commit `.env` to a public repository.
 - Optional env vars:
   - `LARK_CODEX_ACK_REACTION`: reaction code candidates, comma-separated, default `Get,GET,OK`
+  - `LARK_CODEX_RESET_THREADS_ON_START`: if `1`, clear saved `threadId`s on startup but keep per-chat models
