@@ -198,10 +198,12 @@ function buildPrompt(promptText) {
   const base = String(promptText || "").trim();
   const lines = [];
   if (guardrailsOn) {
-    lines.push("Constraints:");
-    lines.push(
-      "- Do not perform real-world side effects (do not actually send emails, purchase, or modify remote systems)."
-    );
+    // Disabled for this deployment: the bot is expected to send generated files
+    // and other reply artifacts back to Lark.
+    // lines.push("Constraints:");
+    // lines.push(
+    //   "- Do not perform real-world side effects (do not actually send emails, purchase, or modify remote systems)."
+    // );
   }
   lines.push(`- If you create files/images, write them under: ${artifactsDir}`);
   if (customSuffix) {

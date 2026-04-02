@@ -316,6 +316,7 @@ def main() -> None:
         except asyncio.TimeoutError:
             try:
                 proc.kill()
+                await proc.communicate()
             except Exception:
                 pass
             return {"answer": f"Codex timed out after {codex_timeout_sec}s.", "artifacts": []}
