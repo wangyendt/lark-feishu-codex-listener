@@ -10,6 +10,7 @@ Env vars:
 - LARK_GROUP_NAME (optional, default: 测试4)  # single group name
 - LARK_VALID_GROUP_NAMES (optional, comma-separated)  # multiple group names
 - LARK_CHAT_ID / LARK_GROUP_CHAT_ID (optional)  # if set, only handle messages from this chat_id
+- LARK_VALID_CHAT_IDS (optional, comma-separated)  # if set, only handle messages from these chat_ids
 - LARK_ECHO_PREFIX (optional, default: [复述] )
 - LARK_REPLY_AS_POST (optional, 0/1, default: 0)  # echo as post instead of text
 - LARK_DEBUG (optional, 0/1, default: 0)
@@ -258,6 +259,10 @@ def main() -> None:
     echo_prefix = os.getenv("LARK_ECHO_PREFIX", "[复述] ")
     reply_as_post = (os.getenv("LARK_REPLY_AS_POST", "0").strip().lower() in {"1", "true", "yes", "y"})
     target_chat_id = _env_any(["LARK_CHAT_ID", "LARK_GROUP_CHAT_ID"])
+    valid_chat_ids_env = os.getenv("LARK_VALID_CHAT_IDS", "").strip()
+    valid_chat_ids = {x.strip() for x in valid_chat_ids_env.split(",") if x.strip()}
+    if target_chat_id:
+        valid_chat_ids.add(target_chat_id)
 
     listener = LarkBotListener(app_id=app_id, app_secret=app_secret)
     chat_name_cache = {}
@@ -706,9 +711,10 @@ def main() -> None:
 
         if not is_group:
             return
-        if target_chat_id and chat_id != target_chat_id:
-            return
-        if not target_chat_id:
+        if valid_chat_ids:
+            if chat_id not in valid_chat_ids:
+                return
+        else:
             if not group_name:
                 group_name = _get_chat_name(chat_id)
             if group_name not in valid_group_names:
@@ -830,6 +836,7 @@ def main() -> None:
     wayne_print(
         {
             "listening": True,
+            "valid_chat_ids": sorted(valid_chat_ids),
             "valid_group_names": sorted(valid_group_names),
             "echo_prefix": echo_prefix,
             "debug": debug,

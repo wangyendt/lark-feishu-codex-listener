@@ -5,6 +5,7 @@ Listen to Feishu/Lark group messages, and when mentioned, route the question to 
 ## What It Does
 
 - Listens to messages in a target group (by group name or pinned `chat_id`)
+- Supports matching by multiple pinned chat IDs via `LARK_VALID_CHAT_IDS`
 - Only reacts when the target bot is mentioned (recommended: match by `mentions[].name`, e.g. `algo_bot_conan`)
 - Adds a `Get` reaction to the original mention immediately, then removes that reaction after the reply is finished
 - Replies immediately with an orange placeholder card, then updates the same card to the final green result
@@ -25,7 +26,8 @@ Listen to Feishu/Lark group messages, and when mentioned, route the question to 
 2. Python deps:
    - This script depends on `pywayne` (not vendored in this repo) and its dependencies.
 3. Node deps:
-   - `npm ci` (or `npm install`) to install `@openai/codex-sdk`
+   - Run `npm ci` (or `npm install`) before first use to install `@openai/codex-sdk`
+   - If you skip this step, the bot will fail with `ERR_MODULE_NOT_FOUND: Cannot find package '@openai/codex-sdk'`
 
 ## Run
 
@@ -44,5 +46,6 @@ python lark_codex_listener.py
 
 - Do not commit `.env` to a public repository.
 - Optional env vars:
+  - `LARK_VALID_CHAT_IDS`: comma-separated chat IDs; when set, matching is done by `chat_id` and does not require group-info read permissions
   - `LARK_CODEX_ACK_REACTION`: reaction code candidates, comma-separated, default `Get,GET,OK`
   - `LARK_CODEX_RESET_THREADS_ON_START`: if `1`, clear saved `threadId`s on startup but keep per-chat models
