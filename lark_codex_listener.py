@@ -592,7 +592,7 @@ def main() -> None:
             if user_open_id:
                 post.add_contents_in_new_line([post.make_at_content(user_open_id), post.make_text_content(" ")])
             post.add_markdown(md_text, table_as="code_block", max_chunk_bytes=8_000)
-            listener.bot.send_post_to_chat(chat_id, post.get_content())
+            listener.bot.send_rich_text_to_chat(chat_id, post.get_content())
 
         async def worker():
             while True:
@@ -822,7 +822,7 @@ def main() -> None:
                 echo_text = echo_text.replace(codex_mention_key, "")
             echo_text = echo_text.strip()
             post.add_content_in_new_line(post.make_text_content(f"{echo_prefix}{echo_text}"))
-            listener.bot.send_post_to_chat(chat_id, post.get_content())
+            listener.bot.send_rich_text_to_chat(chat_id, post.get_content())
         else:
             echo_text = _remove_mention_keys(text, mentions)
             if codex_mention_key:
